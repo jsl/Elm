@@ -40,9 +40,9 @@ data Flags =
           , print_program :: Bool
           , scripts :: [FilePath]
           , no_prelude :: Bool
-	  , cache_dir :: FilePath
-	  , build_dir :: FilePath
-	  , src_dir :: [FilePath]
+          , cache_dir :: FilePath
+          , build_dir :: FilePath
+          , src_dir :: [FilePath]
           }
     deriving (Data,Typeable,Show,Eq)
 
@@ -73,7 +73,7 @@ flags = Flags
     &= versionArg [explicit, name "version", name "v", summary (showVersion version)]
     &= summary ("The Elm Compiler " ++ showVersion version ++ ", (c) Evan Czaplicki 2011-2013")
 
-main :: IO ()             
+main :: IO ()
 main = do setNumCapabilities =<< getNumProcessors
           compileArgs =<< cmdArgs flags
 
@@ -82,7 +82,6 @@ compileArgs flags =
     case files flags of
       [] -> putStrLn "Usage: elm [OPTIONS] [FILES]\nFor more help: elm --help"
       fs -> mapM_ (build flags) fs
-          
 
 buildPath :: Flags -> FilePath -> String -> FilePath
 buildPath flags filePath ext = build_dir flags </> replaceExtension filePath ext
@@ -96,19 +95,29 @@ elmo flags filePath = cachePath flags filePath "elmo"
 elmi :: Flags -> FilePath -> FilePath
 elmi flags filePath = cachePath flags filePath "elmi"
 
+loadElmi :: Flags -> Interfaces -> FilePath -> IO (String,ModuleInterface)
+loadElmi flags interfaces filePath =
+    do
+      handle <- openBinaryFile (elmi flags filePath) ReadMode
+      bits   <- L.hGetContents handle
+      let info :: (String, ModuleInterface)
+          info = Binary.decode bits
+          modInterface = snd info
+
+      when (print_types flags)
+               (printTypes interfaces
+                (iTypes modInterface)
+                (iAliases modInterface)
+                (iImports modInterface))
+
+      L.length bits `seq` hClose handle
+      return info
 
 buildFile :: Flags -> Int -> Int -> Interfaces -> FilePath -> IO (String,ModuleInterface)
 buildFile flags moduleNum numModules interfaces filePath =
     do compiled <- alreadyCompiled
-       case compiled of
-         False -> compile
-         True -> do
-           handle <- openBinaryFile (elmi flags filePath) ReadMode
-           bits <- L.hGetContents handle
-           let info :: (String, ModuleInterface)
-               info = Binary.decode bits
-           L.length bits `seq` hClose handle
-           return info
+       if compiled then loadElmi flags interfaces filePath else compile
+
     where
       alreadyCompiled :: IO Bool
       alreadyCompiled = do
@@ -132,9 +141,10 @@ buildFile flags moduleNum numModules interfaces filePath =
         putStrLn $ concat [ number, " Compiling ", name
                           , replicate (max 1 (20 - length name)) ' '
                           , "( " ++ filePath ++ " )" ]
-        
+
         createDirectoryIfMissing True (cache_dir flags)
         createDirectoryIfMissing True (build_dir flags)
+
         metaModule <-
             case buildFromSource (no_prelude flags) interfaces source of
               Left errors -> do
@@ -145,14 +155,19 @@ buildFile flags moduleNum numModules interfaces filePath =
                     False -> return ()
                     True -> print . pretty $ program modul
                   return modul
-        
-        when (print_types flags) (printTypes interfaces metaModule)
+
+        when (print_types flags)
+                 (printTypes interfaces
+                  (types metaModule) (aliases metaModule) (imports metaModule))
+
         let interface = Canonical.interface name $ ModuleInterface {
-                          iTypes = types metaModule,
-                          iAdts = datatypes metaModule,
-                          iAliases = aliases metaModule,
+                          iTypes    = types metaModule,
+                          iImports  = imports metaModule,
+                          iAdts     = datatypes metaModule,
+                          iAliases  = aliases metaModule,
                           iFixities = fixities metaModule
                         }
+
         createDirectoryIfMissing True . dropFileName $ elmi flags filePath
         handle <- openBinaryFile (elmi flags filePath) WriteMode
         L.hPut handle (Binary.encode (name,interface))
@@ -160,10 +175,10 @@ buildFile flags moduleNum numModules interfaces filePath =
         writeFile (elmo flags filePath) (jsModule metaModule)
         return (name,interface)
 
-printTypes interfaces metaModule = do
+printTypes interfaces moduleTypes moduleAliases moduleImports = do
   putStrLn ""
-  let rules = Alias.rules interfaces metaModule
-  forM_ (Map.toList $ types metaModule) $ \(n,t) -> do
+  let rules = Alias.rules interfaces moduleAliases moduleImports
+  forM_ (Map.toList moduleTypes) $ \(n,t) -> do
       print $ variable n <+> P.text ":" <+> pretty (Alias.realias rules t)
   putStrLn ""
 
