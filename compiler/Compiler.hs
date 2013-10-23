@@ -12,6 +12,7 @@ import System.Exit
 import System.FilePath
 import System.IO
 import GHC.Conc
+import Control.Applicative (liftA2)
 
 import Text.Blaze.Html.Renderer.Pretty (renderHtml)
 import qualified Data.ByteString.Lazy.Char8 as BS
@@ -113,74 +114,74 @@ loadElmi flags interfaces filePath =
       L.length bits `seq` hClose handle
       return info
 
-buildFile :: Flags -> Int -> Int -> Interfaces -> FilePath -> IO (String,ModuleInterface)
-buildFile flags moduleNum numModules interfaces filePath =
-    do compiled <- alreadyCompiled
-       if compiled then loadElmi flags interfaces filePath else compile
+alreadyCompiled :: Flags -> FilePath -> IO Bool
+alreadyCompiled flags filePath = do
+    buildArtifactsExist <- liftA2 (&&) (doesFileExist (elmi flags filePath))
+                           (doesFileExist (elmo flags filePath))
 
-    where
-      alreadyCompiled :: IO Bool
-      alreadyCompiled = do
-        existsi <- doesFileExist (elmi flags filePath)
-        existso <- doesFileExist (elmo flags filePath)
-        if not existsi || not existso
-            then return False
-            else do tsrc <- getModificationTime filePath
-                    tint <- getModificationTime (elmo flags filePath)
-                    return (tsrc <= tint)
+    if buildArtifactsExist
+      then
+          liftA2 (<=) (getModificationTime filePath)
+                     (getModificationTime (elmo flags filePath))
+      else
+          return False
 
-      number :: String
+compile :: Flags -> Int -> Int -> Interfaces -> FilePath -> IO (String,ModuleInterface)
+compile flags moduleNum numModules interfaces filePath = do
+  source <- readFile filePath
+  let name   = case getModuleName source of
+                 Just n  -> n
+                 Nothing -> "Main"
       number = "[" ++ show moduleNum ++ " of " ++ show numModules ++ "]"
 
-      compile :: IO (String,ModuleInterface)
-      compile = do
-        source <- readFile filePath
-        let name = case getModuleName source of
-                     Just n -> n
-                     Nothing -> "Main"
-        putStrLn $ concat [ number, " Compiling ", name
-                          , replicate (max 1 (20 - length name)) ' '
-                          , "( " ++ filePath ++ " )" ]
+  putStrLn $ concat [ number, " Compiling ", name
+                    , replicate (max 1 (20 - length name)) ' '
+                    , "( " ++ filePath ++ " )" ]
 
-        createDirectoryIfMissing True (cache_dir flags)
-        createDirectoryIfMissing True (build_dir flags)
+  createDirectoryIfMissing True (cache_dir flags)
+  createDirectoryIfMissing True (build_dir flags)
 
-        metaModule <-
-            case buildFromSource (no_prelude flags) interfaces source of
-              Left errors -> do
-                  mapM print (List.intersperse (P.text " ") errors)
-                  exitFailure
-              Right modul -> do
-                  case print_program flags of
-                    False -> return ()
-                    True -> print . pretty $ program modul
-                  return modul
+  metaModule <-
+      case buildFromSource (no_prelude flags) interfaces source of
+        Left errors -> do
+            mapM print (List.intersperse (P.text " ") errors)
+            exitFailure
+        Right modul -> do
+          when (print_program flags) $ print . pretty $ program modul
+          return modul
 
-        when (print_types flags)
-                 (printTypes interfaces
-                  (types metaModule) (aliases metaModule) (imports metaModule))
+  when (print_types flags)
+           (printTypes interfaces
+            (types metaModule) (aliases metaModule) (imports metaModule))
 
-        let interface = Canonical.interface name $ ModuleInterface {
-                          iTypes    = types metaModule,
-                          iImports  = imports metaModule,
-                          iAdts     = datatypes metaModule,
-                          iAliases  = aliases metaModule,
-                          iFixities = fixities metaModule
-                        }
+  let interface = Canonical.interface name $ ModuleInterface {
+                    iTypes    = types metaModule,
+                    iImports  = imports metaModule,
+                    iAdts     = datatypes metaModule,
+                    iAliases  = aliases metaModule,
+                    iFixities = fixities metaModule
+                  }
 
-        createDirectoryIfMissing True . dropFileName $ elmi flags filePath
-        handle <- openBinaryFile (elmi flags filePath) WriteMode
-        L.hPut handle (Binary.encode (name,interface))
-        hClose handle
-        writeFile (elmo flags filePath) (jsModule metaModule)
-        return (name,interface)
+  createDirectoryIfMissing True . dropFileName $ elmi flags filePath
+  handle <- openBinaryFile (elmi flags filePath) WriteMode
+  L.hPut handle (Binary.encode (name,interface))
+  hClose handle
+  writeFile (elmo flags filePath) (jsModule metaModule)
+  return (name,interface)
+
+buildFile :: Flags -> Int -> Int -> Interfaces -> FilePath -> IO (String,ModuleInterface)
+buildFile flags moduleNum numModules interfaces filePath = do
+  compiled <- alreadyCompiled flags filePath
+  if compiled
+    then loadElmi flags interfaces filePath
+    else compile flags moduleNum numModules interfaces filePath
 
 printTypes interfaces moduleTypes moduleAliases moduleImports = do
   putStrLn ""
-  let rules = Alias.rules interfaces moduleAliases moduleImports
   forM_ (Map.toList moduleTypes) $ \(n,t) -> do
       print $ variable n <+> P.text ":" <+> pretty (Alias.realias rules t)
   putStrLn ""
+  where rules = Alias.rules interfaces moduleAliases moduleImports
 
 getRuntime :: Flags -> IO FilePath
 getRuntime flags =
@@ -219,7 +220,6 @@ build flags rootFile = do
              return (BS.append src js)
 
       sources js = map Link (scripts flags) ++ [ Source js ]
-
 
 buildFiles :: Flags -> Int -> Interfaces -> String -> [FilePath] -> IO (String, Interfaces)
 buildFiles _ _ interfaces moduleName [] = return (moduleName, interfaces)

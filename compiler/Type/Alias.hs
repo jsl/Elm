@@ -25,14 +25,15 @@ collect interfaces moduleAliases =
           Data _ [] -> True
           _ -> False
 
+localizer :: [(String,ImportMethod)] -> Type -> Type
 localizer moduleImports = go
   where
     go tipe =
         case tipe of
-          Var _ -> tipe
-          EmptyRecord -> tipe
-          Lambda t1 t2 -> Lambda (go t1) (go t2)
-          Data name ts -> Data (localize name) (map go ts)
+          Var _         -> tipe
+          EmptyRecord   -> tipe
+          Lambda t1 t2  -> Lambda (go t1) (go t2)
+          Data name ts  -> Data (localize name) (map go ts)
           Record fs ext -> Record (map (second go) fs) (go ext)
 
     byMethod = foldr (\(n,m) d -> Map.insertWith (++) n [m] d)
