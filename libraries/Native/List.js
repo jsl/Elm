@@ -95,7 +95,7 @@ Elm.Native.List.make = function(elm) {
     function foldl(f, b, xs) {
         var acc = b;
         while (xs.ctor !== '[]') {
-            acc = A2(f, xs._0, acc);
+            acc = A2(f, acc, xs._0);
             xs = xs._1;
         }
         return acc;
